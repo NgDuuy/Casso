@@ -1,0 +1,6 @@
+python-telegram-bot>=22,<23
+pandas>=2.2,<3
+openai>=1.30
+qrcode[pil]>=7.4
+requests>=2.31
+python-dotenv>=1.0
