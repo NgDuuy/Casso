@@ -4,6 +4,9 @@ echo "Starting bot..."
 python bot.py &
 
 echo "Starting streamlit..."
-exec streamlit run admin_streamlit.py \
-  --server.address 0.0.0.0 \
-  --server.port 8000
+
+PORT=${PORT:-8501}
+
+streamlit run admin_streamlit.py \
+  --server.port $PORT \
+  --server.address 0.0.0.0
