@@ -5,8 +5,6 @@ python bot.py &
 
 echo "Starting streamlit..."
 
-PORT=${PORT:-8501}
-
-streamlit run admin_streamlit.py \
-  --server.port $PORT \
+exec streamlit run admin_streamlit.py \
+  --server.port ${PORT:-8000} \
   --server.address 0.0.0.0
