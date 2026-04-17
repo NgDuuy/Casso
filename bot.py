@@ -31,11 +31,11 @@ from telegram.ext import (
 
 load_dotenv()
 import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "orders.db")
-MENU_PATH = os.path.join(BASE_DIR, "data/Menu.csv")
-# MENU_PATH = "data/Menu.csv"
-# DB_PATH = "orders.db"
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DB_PATH = os.path.join(BASE_DIR, "orders.db")
+# MENU_PATH = os.path.join(BASE_DIR, "data/Menu.csv")
+MENU_PATH = "data/Menu.csv"
+DB_PATH = "orders.db"
 APP_REF = None
 
 

@@ -3,10 +3,9 @@ import sqlite3
 import json
 import pandas as pd
 import os
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "orders.db")
-# DB_PATH = "orders.db"
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# DB_PATH = os.path.join(BASE_DIR, "orders.db")
+DB_PATH = "orders.db"
 
 def get_orders():
     conn = sqlite3.connect(DB_PATH)
