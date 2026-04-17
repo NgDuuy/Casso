@@ -136,29 +136,27 @@ client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 if not TOKEN or TOKEN == "YOUR_BOT_TOKEN_HERE":
     raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured in .env.")
 
-MOMO_ENABLED = get_env("MOMO_ENABLED", "false").lower() == "true"
-MOMO_API_ENDPOINT = get_env("MOMO_API_ENDPOINT")
-MOMO_PAYMENT_URL = get_env("MOMO_PAYMENT_URL")
-MOMO_PARTNER_CODE = get_env("MOMO_PARTNER_CODE")
-MOMO_ACCESS_KEY = get_env("MOMO_ACCESS_KEY")
-MOMO_SECRET_KEY = get_env("MOMO_SECRET_KEY")
-PUBLIC_BASE_URL = get_env("PUBLIC_BASE_URL")
-MOMO_RETURN_URL = get_env("MOMO_RETURN_URL") or (f"{PUBLIC_BASE_URL}/momo-return" if PUBLIC_BASE_URL else "")
-MOMO_NOTIFY_URL = get_env("MOMO_NOTIFY_URL") or (f"{PUBLIC_BASE_URL}/momo-ipn" if PUBLIC_BASE_URL else "")
-MOMO_ORDER_INFO = get_env("MOMO_ORDER_INFO", "Thanh toan don tra sua")
-MOMO_REQUEST_TYPE = get_env("MOMO_REQUEST_TYPE", "payWithMethod")
-MOMO_PARTNER_NAME = get_env("MOMO_PARTNER_NAME", "Casso Milk Tea Bot")
-MOMO_STORE_ID = get_env("MOMO_STORE_ID", "CASSO_STORE")
 WEBHOOK_HOST = get_env("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT = int(get_env("WEBHOOK_PORT", "8000") or "8000")
+
+PAYOS_CLIENT_ID = get_env("PAYOS_CLIENT_ID")
+PAYOS_API_KEY = get_env("PAYOS_API_KEY")
+PAYOS_CHECKSUM_KEY = get_env("PAYOS_CHECKSUM_KEY")
+
+PAYOS_RETURN_URL = get_env("PAYOS_RETURN_URL")
+PAYOS_CANCEL_URL = get_env("PAYOS_CANCEL_URL")
+PAYOS_WEBHOOK_URL = get_env("PAYOS_WEBHOOK_URL")
+
 OWNER_NAME = get_env("OWNER_NAME", "Chu quan")
 OWNER_PHONE = get_env("OWNER_PHONE")
 OWNER_ADDRESS = get_env("OWNER_ADDRESS")
 OWNER_TELEGRAM_CHAT_ID = get_env("OWNER_TELEGRAM_CHAT_ID")
-
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
-
 
 def ensure_column(cursor: sqlite3.Cursor, name: str, definition: str) -> None:
     cursor.execute("PRAGMA table_info(orders)")
@@ -177,10 +175,11 @@ def init_db() -> None:
             items TEXT,
             total INTEGER,
             status TEXT,
-            momo_order_id TEXT
+            payos_order_code TEXT
         )
         """
     )
+    ensure_column(cursor, "chat_id", "TEXT")
     ensure_column(cursor, "customer_name", "TEXT")
     ensure_column(cursor, "customer_username", "TEXT")
     ensure_column(cursor, "phone", "TEXT")
@@ -201,9 +200,9 @@ def row_to_dict(row: sqlite3.Row | None) -> dict | None:
     return dict(row) if row is not None else None
 
 
-def get_order_by_momo_order_id(momo_order_id: str) -> dict | None:
+def get_order_by_payos_order_code(payos_order_code: str) -> dict | None:
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM orders WHERE momo_order_id = ?", (momo_order_id,))
+    cursor.execute("SELECT * FROM orders WHERE payos_order_code= ?", (payos_order_code,))
     return row_to_dict(cursor.fetchone())
 
 CHECKOUT_FIELDS = ["customer_name", "phone", "address", "note"]
@@ -600,75 +599,45 @@ def answer_with_ai(message: str, context: ContextTypes.DEFAULT_TYPE) -> str | No
     except Exception:
         return None
 
+def generate_payos_payment_url(total: int, order_code: int) -> str:
+    url = "https://api-merchant.payos.vn/v2/payment-requests"
 
-def generate_momo_payment_url(total: int, order_id: str) -> str:
-    if MOMO_PAYMENT_URL:
-        return f"{MOMO_PAYMENT_URL}?amount={total}&orderId={order_id}"
+    data = {
+        "orderCode": order_code,
+        "amount": total,
+        "description": f"Thanh toan don #{order_code}",
+        "returnUrl": PAYOS_RETURN_URL,
+        "cancelUrl": PAYOS_CANCEL_URL,
+    }
 
-    def is_placeholder(value: str) -> bool:
-        normalized = (value or "").strip().lower()
-        return not normalized or "your_momo_" in normalized or normalized in {"changeme", "change_me"}
-
-    ready_for_momo = all(
-        [
-            MOMO_ENABLED,
-            MOMO_API_ENDPOINT,
-            MOMO_PARTNER_CODE and not is_placeholder(MOMO_PARTNER_CODE),
-            MOMO_ACCESS_KEY and not is_placeholder(MOMO_ACCESS_KEY),
-            MOMO_SECRET_KEY and not is_placeholder(MOMO_SECRET_KEY),
-            MOMO_RETURN_URL,
-            MOMO_NOTIFY_URL,
-        ]
-    )
-    if not ready_for_momo:
-        raise ValueError(
-            "MoMo chua duoc cau hinh day du. Can MOMO_API_ENDPOINT, PARTNER_CODE, ACCESS_KEY, "
-            "SECRET_KEY, MOMO_RETURN_URL va MOMO_NOTIFY_URL. "
-            "Luu y: MOMO_RETURN_URL nen ket thuc bang /momo-return va MOMO_NOTIFY_URL nen ket thuc bang /momo-ipn."
-        )
-
-    request_id = str(uuid.uuid4())
-    amount = str(total)
-    extra_data = ""
-    request_type = MOMO_REQUEST_TYPE or "captureWallet"
-    raw_signature = (
-        f"accessKey={MOMO_ACCESS_KEY}&amount={amount}&extraData={extra_data}&ipnUrl={MOMO_NOTIFY_URL}"
-        f"&orderId={order_id}&orderInfo={MOMO_ORDER_INFO}&partnerCode={MOMO_PARTNER_CODE}"
-        f"&redirectUrl={MOMO_RETURN_URL}&requestId={request_id}&requestType={request_type}"
-    )
+    # tạo chữ ký
+    raw = f"amount={data['amount']}&cancelUrl={data['cancelUrl']}&description={data['description']}&orderCode={data['orderCode']}&returnUrl={data['returnUrl']}"
+    
     signature = hmac.new(
-        MOMO_SECRET_KEY.encode("utf-8"),
-        raw_signature.encode("utf-8"),
-        hashlib.sha256,
+        PAYOS_CHECKSUM_KEY.encode(),
+        raw.encode(),
+        hashlib.sha256
     ).hexdigest()
 
-    payload = {
-        "partnerCode": MOMO_PARTNER_CODE,
-        "accessKey": MOMO_ACCESS_KEY,
-        "partnerName": MOMO_PARTNER_NAME,
-        "storeId": MOMO_STORE_ID,
-        "requestId": request_id,
-        "amount": amount,
-        "orderId": order_id,
-        "orderInfo": MOMO_ORDER_INFO,
-        "redirectUrl": MOMO_RETURN_URL,
-        "ipnUrl": MOMO_NOTIFY_URL,
-        "lang": "vi",
-        "extraData": extra_data,
-        "requestType": request_type,
-        "signature": signature,
+    headers = {
+        "x-client-id": PAYOS_CLIENT_ID,
+        "x-api-key": PAYOS_API_KEY,
+        "Content-Type": "application/json"
     }
-    response = requests.post(MOMO_API_ENDPOINT, json=payload, timeout=15)
-    if response.status_code >= 400:
-        raise ValueError(f"MoMo HTTP {response.status_code}: {response.text}")
-    data = response.json()
-    if data.get("resultCode") not in {0, None}:
-        raise ValueError(f"MoMo create payment loi: {data}")
-    if data.get("payUrl"):
-        return data["payUrl"]
-    if data.get("deeplink"):
-        return data["deeplink"]
-    raise ValueError(f"MoMo response missing payUrl: {data}")
+
+    payload = {
+        **data,
+        "signature": signature
+    }
+
+    # res = requests.post(url, json=payload, headers=headers)
+    res = requests.post(url, json=payload, headers=headers, timeout=10)
+    if res.status_code != 200:
+        raise Exception(res.text)
+
+    result = res.json()
+
+    return result["data"]["checkoutUrl"]
 
 
 def is_demo_payment_url(payment_url: str) -> bool:
@@ -715,15 +684,16 @@ def build_checkout_summary(context: ContextTypes.DEFAULT_TYPE) -> str:
 def create_or_update_pending_order(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    momo_order_id: str,
+    payos_order_code: str,
     payment_url: str,
 ) -> int:
+    chat_id = str(update.effective_chat.id)
     cart = get_cart(context)
     info = get_checkout_info(context)
     username = update.effective_user.username or ""
     summary_items = json.dumps(cart, ensure_ascii=False)
     customer_label = info.get("customer_name") or username or "Anonymous"
-    payment_method = "momo"
+    payment_method = "payos"
     existing_db_id = context.user_data.get("pending_order_db_id")
     cursor = conn.cursor()
 
@@ -732,8 +702,8 @@ def create_or_update_pending_order(
             """
             UPDATE orders
             SET customer = ?, customer_name = ?, customer_username = ?, phone = ?, address = ?, note = ?,
-                items = ?, total = ?, status = ?, momo_order_id = ?, payment_status = ?, payment_method = ?,
-                payment_url = ?
+                items = ?, total = ?, status = ?, payos_order_code = ?, payment_status = ?, payment_method = ?,
+                payment_url = ?, chat_id = ?
             WHERE id = ?
             """,
             (
@@ -746,10 +716,11 @@ def create_or_update_pending_order(
                 summary_items,
                 cart_total(cart),
                 "pending_payment",
-                momo_order_id,
+                payos_order_code,
                 "pending",
                 payment_method,
                 payment_url,
+                chat_id,
                 existing_db_id,
             ),
         )
@@ -768,7 +739,7 @@ def create_or_update_pending_order(
             items,
             total,
             status,
-            momo_order_id,
+            payos_order_code,
             payment_status,
             payment_method,
             payment_url,
@@ -785,7 +756,7 @@ def create_or_update_pending_order(
             summary_items,
             cart_total(cart),
             "pending_payment",
-            momo_order_id,
+            payos_order_code,
             "pending",
             payment_method,
             payment_url,
@@ -796,8 +767,8 @@ def create_or_update_pending_order(
     return int(cursor.lastrowid)
 
 
-def mark_order_paid(momo_order_id: str, payment_url: str = "") -> dict | None:
-    order = get_order_by_momo_order_id(momo_order_id)
+def mark_order_paid(payos_order_code: str, payment_url: str = "") -> dict | None:
+    order = get_order_by_payos_order_code(payos_order_code)
     if not order:
         return None
 
@@ -806,12 +777,12 @@ def mark_order_paid(momo_order_id: str, payment_url: str = "") -> dict | None:
         """
         UPDATE orders
         SET status = ?, payment_status = ?, payment_url = COALESCE(NULLIF(?, ''), payment_url)
-        WHERE momo_order_id = ?
+        WHERE payos_order_code= ?
         """,
-        ("confirmed", "paid", payment_url, momo_order_id),
+        ("confirmed", "paid", payment_url, payos_order_code),
     )
     conn.commit()
-    return get_order_by_momo_order_id(momo_order_id)
+    return get_order_by_payos_order_code(payos_order_code)
 
 
 def build_kitchen_ticket(context: ContextTypes.DEFAULT_TYPE, order_id: int) -> str:
@@ -882,110 +853,139 @@ def notify_owner_once(order: dict | None) -> None:
     conn.commit()
 
 
-def build_momo_ipn_signature(payload: dict) -> str:
-    raw_signature = (
-        f"accessKey={MOMO_ACCESS_KEY}&amount={payload.get('amount', '')}&extraData={payload.get('extraData', '')}"
-        f"&message={payload.get('message', '')}&orderId={payload.get('orderId', '')}"
-        f"&orderInfo={payload.get('orderInfo', '')}&orderType={payload.get('orderType', '')}"
-        f"&partnerCode={payload.get('partnerCode', '')}&payType={payload.get('payType', '')}"
-        f"&requestId={payload.get('requestId', '')}&responseTime={payload.get('responseTime', '')}"
-        f"&resultCode={payload.get('resultCode', '')}&transId={payload.get('transId', '')}"
-    )
-    return hmac.new(
-        MOMO_SECRET_KEY.encode("utf-8"),
-        raw_signature.encode("utf-8"),
-        hashlib.sha256,
+# def build_momo_ipn_signature(payload: dict) -> str:
+#     raw_signature = (
+#         f"accessKey={MOMO_ACCESS_KEY}&amount={payload.get('amount', '')}&extraData={payload.get('extraData', '')}"
+#         f"&message={payload.get('message', '')}&orderId={payload.get('orderId', '')}"
+#         f"&orderInfo={payload.get('orderInfo', '')}&orderType={payload.get('orderType', '')}"
+#         f"&partnerCode={payload.get('partnerCode', '')}&payType={payload.get('payType', '')}"
+#         f"&requestId={payload.get('requestId', '')}&responseTime={payload.get('responseTime', '')}"
+#         f"&resultCode={payload.get('resultCode', '')}&transId={payload.get('transId', '')}"
+#     )
+#     return hmac.new(
+#         MOMO_SECRET_KEY.encode("utf-8"),
+#         raw_signature.encode("utf-8"),
+#         hashlib.sha256,
+#     ).hexdigest()
+
+
+# def process_momo_ipn(payload: dict) -> tuple[int, str]:
+#     signature = str(payload.get("signature", ""))
+#     if not signature or not MOMO_SECRET_KEY or not MOMO_ACCESS_KEY:
+#         return 400, "Missing MoMo signature config"
+
+#     expected_signature = build_momo_ipn_signature(payload)
+#     if signature != expected_signature:
+#         return 400, "Invalid signature"
+
+#     if int(payload.get("resultCode", -1)) != 0:
+#         return 200, "Payment not successful"
+
+#     order = mark_order_paid(str(payload.get("orderId", "")), str(payload.get("payUrl", "")))
+#     if not order:
+#         return 404, "Order not found"
+
+#     notify_owner_once(order)
+#     return 200, "OK"
+def verify_payos_signature(data: dict) -> bool:
+    raw = data.get("data", {})
+    # raw_str = json.dumps(raw, separators=(',', ':'), ensure_ascii=False)
+    raw_str = json.dumps(raw, separators=(',', ':'), sort_keys=True)
+
+    expected_signature = hmac.new(
+        PAYOS_CHECKSUM_KEY.encode(),
+        raw_str.encode(),
+        hashlib.sha256
     ).hexdigest()
 
+    return expected_signature == data.get("signature")
 
-def process_momo_ipn(payload: dict) -> tuple[int, str]:
-    signature = str(payload.get("signature", ""))
-    if not signature or not MOMO_SECRET_KEY or not MOMO_ACCESS_KEY:
-        return 400, "Missing MoMo signature config"
-
-    expected_signature = build_momo_ipn_signature(payload)
-    if signature != expected_signature:
-        return 400, "Invalid signature"
-
-    if int(payload.get("resultCode", -1)) != 0:
-        return 200, "Payment not successful"
-
-    order = mark_order_paid(str(payload.get("orderId", "")), str(payload.get("payUrl", "")))
-    if not order:
-        return 404, "Order not found"
-
-    notify_owner_once(order)
-    return 200, "OK"
-
-
-class MoMoCallbackHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path != "/momo-return":
+class PayOSHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/payos-webhook":
             self.send_response(404)
             self.end_headers()
-            self.wfile.write(b"Not found")
             return
 
-        params = parse_qs(parsed.query)
-        order_id = params.get("orderId", [""])[0]
-        result_code = params.get("resultCode", [""])[0]
-        ok = result_code == "0"
-        html = (
-            "<html><body><h1>Thanh toan thanh cong</h1><p>Ban co the quay lai Telegram.</p></body></html>"
-            if ok
-            else "<html><body><h1>Thanh toan chua thanh cong</h1><p>Vui long quay lai Telegram de thu lai.</p></body></html>"
-        )
-        if ok and order_id:
-            order = mark_order_paid(order_id)
-            if order:
-                notify_owner_once(order)
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
 
-    def do_POST(self) -> None:
-        parsed = urlparse(self.path)
-        if parsed.path != "/momo-ipn":
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Not found")
-            return
-
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        raw_body = self.rfile.read(length)
+        # data = json.loads(body.decode())
         try:
-            payload = json.loads(raw_body.decode("utf-8"))
-        except Exception:
+            data = json.loads(body.decode())
+        except:
             self.send_response(400)
+            return
+        if data.get("code") == "00":
+            if not verify_payos_signature(data):
+                self.send_response(400)
+                self.end_headers()
+                return
+            order_code = data["data"]["orderCode"]
+
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE orders SET payment_status='paid', status='confirmed' WHERE payos_order_code=?",
+                (str(order_code),)
+            )
+            conn.commit()
+
+            order = get_order_by_payos_order_code(str(order_code))
+            notify_owner_once(order)
+            # ✅ gửi về Telegram user
+            if order and APP_REF:
+                try:
+                    chat_id = order.get("chat_id")
+                    if chat_id:
+                        APP_REF.bot.send_message(
+                            chat_id=int(chat_id),
+                            text="✅ Thanh toán thành công! Đơn của bạn đang được chuẩn bị."
+                        )
+                except Exception as e:
+                    print("Send Telegram error:", e)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"message": "ok"}).encode())
+    def do_GET(self):
+        parsed = urlparse(self.path)
+
+        # ✅ xử lý return URL
+        if parsed.path == "/payos-return":
+            params = parse_qs(parsed.query)
+
+            order_code = params.get("orderCode", [""])[0]
+            status = params.get("status", [""])[0]
+
+            if status == "PAID":
+                order = mark_order_paid(order_code)
+                notify_owner_once(order)
+
+                message = "Thanh toán thành công! Bạn có thể quay lại Telegram."
+            else:
+                message = "Thanh toán chưa thành công."
+
+            html = f"""
+            <html>
+                <body>
+                    <h1>{message}</h1>
+                </body>
+            </html>
+            """
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"Invalid JSON")
+            self.wfile.write(html.encode("utf-8"))
             return
 
-        status, message = process_momo_ipn(payload)
-        body = json.dumps({"message": message}).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        # ❌ nếu không phải route này
+        self.send_response(404)
         self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args) -> None:
-        return
-
-
-def start_momo_callback_server() -> None:
-    if not MOMO_NOTIFY_URL and not MOMO_RETURN_URL:
-        return
-
-    server = ThreadingHTTPServer((WEBHOOK_HOST, WEBHOOK_PORT), MoMoCallbackHandler)
+def start_callback_server():
+    server = ThreadingHTTPServer((WEBHOOK_HOST, WEBHOOK_PORT), PayOSHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.setdefault("cart", [])
     await update.message.reply_text(
@@ -1043,27 +1043,36 @@ async def begin_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def show_checkout_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     order_id = str(uuid.uuid4())
+    order_code = int(datetime.now().timestamp())
     total = cart_total(get_cart(context))
     try:
-        payment_url = generate_momo_payment_url(total, order_id)
+        # payment_url = generate_momo_payment_url(total, order_id)
+        order_code = int(datetime.now().timestamp())
+
+        payment_url = generate_payos_payment_url(total, order_code)
+
     except Exception as exc:
         await message.reply_text(
-            "Khong tao duoc link thanh toan MoMo.\n"
+            "Khong tao duoc link thanh toan PayOS.\n"
             f"Chi tiet: {exc}\n"
-            "Ban can cau hinh lai thong tin MoMo trong .env."
+            "Ban can cau hinh lai thong tin PayOS trong .env."
         )
         return
 
-    pending_db_id = create_or_update_pending_order(update, context, order_id, payment_url)
+    pending_db_id = create_or_update_pending_order(
+        update, context, str(order_code), payment_url
+    )
+    
     context.user_data["pending_payment"] = {
-        "order_id": order_id,
+        "order_code": str(order_code),
         "payment_url": payment_url,
     }
     context.user_data["pending_order_db_id"] = pending_db_id
     context.user_data["awaiting_field"] = None
 
-    payment_note = "Mo link ben duoi de thanh toan. Sau khi thanh toan thanh cong, bot se nhan IPN tu MoMo va cap nhat don."
-
+    # payment_note = "Mo link ben duoi de thanh toan. Sau khi thanh toan thanh cong, bot se nhan IPN tu MoMo va cap nhat don."
+    payment_note =   "Mo link ben duoi de thanh toan.\n Sau khi thanh toan, he thong se tu dong cap nhat trong vai giay.\n Neu chua thay, ban bam 'Da thanh toan' hoac doi 5-10 giay."
+    
     await message.reply_text(
         build_checkout_summary(context)
         + f"\n\n{payment_note}\n{payment_url}",
@@ -1087,7 +1096,8 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     pending_payment = context.user_data.get("pending_payment", {})
-    order = get_order_by_momo_order_id(pending_payment.get("order_id", ""))
+    # order = get_order_by_payos_order_code(pending_payment.get("order_id", ""))
+    order = get_order_by_payos_order_code(pending_payment.get("order_code", ""))
     if order and order.get("payment_status") == "paid":
         ticket = build_kitchen_ticket_from_order(order)
         await update.message.reply_text(
@@ -1097,7 +1107,7 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     await update.message.reply_text(
-        "MoMo chưa gửi xác nhận thanh toán về bot. Nếu bạn vừa thanh toán xong, đợi vài giây rồi thử lại."
+        "PayOS chưa gửi xác nhận thanh toán về bot. Nếu bạn vừa thanh toán xong, đợi vài giây rồi thử lại."
     )
 
 
@@ -1239,7 +1249,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await safe_edit_message(query, "Giỏ hàng đang trống.", reply_markup=build_main_keyboard())
             return
         pending_payment = context.user_data.get("pending_payment", {})
-        order = get_order_by_momo_order_id(pending_payment.get("order_id", ""))
+        # order = get_order_by_payos_order_code(pending_payment.get("order_id", ""))
+        order = get_order_by_payos_order_code(pending_payment.get("order_code", ""))
         if order and order.get("payment_status") == "paid":
             ticket = build_kitchen_ticket_from_order(order)
             await query.message.reply_text("Thanh toan da duoc MoMo xac nhan.\n\n" + ticket)
@@ -1316,10 +1327,11 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_free_text))
 
-    start_momo_callback_server()
+    # start_momo_callback_server()
     print("Bot dang chay. Mo Telegram va gui /start de thu.")
     application.run_polling()
 
 
 if __name__ == "__main__":
+    start_callback_server()
     main()
